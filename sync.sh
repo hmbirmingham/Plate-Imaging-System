@@ -1,5 +1,6 @@
 #!/bin/bash
-# sync.sh — push local vscode folder to GitHub
+# sync.sh — Live code updater. Pulls latest source from Google Drive so the
+# Pi reads updated files automatically without manual SCP or SSH.
 # Usage: ./sync.sh "optional commit message"
 
 MSG=${1:-"Update"}
