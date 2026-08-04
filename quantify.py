@@ -245,6 +245,20 @@ def quantify_colonies(
       input_path, output_path, count, px_per_mm,
       plate_circle, contours, summary_stats, anomaly_count
     """
+    # ── Parameter validation ─────────────────────────────────────────────────
+    if min_area_mm2 < 0:
+        raise ValueError(f"min_area_mm2 must be non-negative, got {min_area_mm2}")
+    if max_area_mm2 <= min_area_mm2:
+        raise ValueError(
+            f"max_area_mm2 ({max_area_mm2}) must be greater than "
+            f"min_area_mm2 ({min_area_mm2})")
+    if not (0 <= min_circularity <= 1):
+        raise ValueError(
+            f"min_circularity must be in [0, 1], got {min_circularity}")
+    if max_aspect_ratio <= 1:
+        raise ValueError(
+            f"max_aspect_ratio must be greater than 1, got {max_aspect_ratio}")
+
     if bg_blur_kernel % 2 == 0:
         raise ValueError("bg_blur_kernel must be odd.")
 
