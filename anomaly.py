@@ -212,11 +212,17 @@ class MLDetector:
         if self.model is not None:
             proba = self.model.predict_proba(X)[:, 1]
         else:
-            # Map isolation forest score to 0-1
+            # Map isolation forest score to 0-1.
             iso_scores = self.isolation_forest["iso"].score_samples(
                 self.isolation_forest["scaler"].transform(X))
-            proba = 1 - (iso_scores - iso_scores.min()) / \
-                        (iso_scores.max() - iso_scores.min() + 1e-9)
+            score_range = iso_scores.max() - iso_scores.min()
+            if score_range == 0:
+                # All colonies share identical features → no separation to
+                # normalise against. Guard the divide-by-zero (which would
+                # otherwise yield NaN) by assigning a neutral score.
+                proba = np.full(len(iso_scores), 0.5)
+            else:
+                proba = 1 - (iso_scores - iso_scores.min()) / score_range
 
         for i, colony in enumerate(colonies):
             ml_flag   = bool(iso_preds[i] == -1 or proba[i] > 0.5)
