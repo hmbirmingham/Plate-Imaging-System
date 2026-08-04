@@ -21,6 +21,21 @@ Training
     detector = AnomalyDetector()
     detector.train("data/features.csv")      # build ML layer
     detector.save_model("models/anomaly.pkl")
+
+Colony dict schema — keys WRITTEN by this module (owned here):
+  stat_flags     (list[str] — flags from StatisticalDetector)
+  stat_score     (float — combined Z-score across area/circularity/aspect)
+  ml_anomaly     (bool | None — Random Forest / isolation-forest prediction)
+  ml_score       (float | None — anomaly confidence 0–1)
+  ml_note        (str — "trained" | "not trained")
+  is_anomaly     (bool — combined verdict: statistical OR ML)
+  combined_score (float — mean of stat_score and ml_score)
+
+Keys READ from quantify.py (treat as read-only here):
+  area_mm2, circularity, aspect_ratio, equiv_radius_px,
+  r_mean, g_mean, b_mean, r_std, g_std, b_std,
+  texture_contrast, hemolysis_delta,
+  anomaly_flags  (initial morphometric flags — preserved, not overwritten)
 """
 
 import os

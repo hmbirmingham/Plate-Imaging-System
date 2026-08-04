@@ -17,6 +17,19 @@ Calibration
 All areas are returned in mm² using the detected plate radius and the known
 physical inner radius (PLATE_INNER_RADIUS_MM). This makes measurements
 distance-invariant — useful when imaging height is inconsistent.
+
+Colony dict schema — keys WRITTEN by this module (owned here):
+  area_px, area_mm2, circularity, aspect_ratio, perimeter_px,
+  equiv_radius_px, centroid, bbox,
+  r_mean, g_mean, b_mean, r_std, g_std, b_std,
+  texture_contrast, hemolysis_delta,
+  anomaly_flags  (list[str] — morphometric/statistical flags; includes
+                  "touching_colony" from watershed and the Z-score flags),
+  anomaly_score  (float — mean Z across area/circularity/aspect_ratio)
+
+Keys WRITTEN by anomaly.py (treat as read-only here):
+  stat_flags, stat_score, ml_anomaly, ml_score, ml_note,
+  is_anomaly, combined_score
 """
 
 import os
