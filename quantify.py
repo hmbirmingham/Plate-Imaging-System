@@ -32,6 +32,45 @@ from scipy import ndimage as ndi
 # Standard 90-mm petri dish usable inner radius after rim exclusion (mm).
 PLATE_INNER_RADIUS_MM = 40.0
 
+# ── Detection & anomaly thresholds ────────────────────────────────────────────
+# Extracted from inline literals so the biological/algorithmic rationale is
+# explicit and tunable per-medium after validation. Values are unchanged.
+
+# Minimum number of colonies on a plate before per-plate statistical (Z-score)
+# anomaly scoring is meaningful — below this the population stats are unstable.
+MIN_COLONIES_FOR_STATS: int = 3
+
+# Z-score beyond which a colony feature is flagged as a statistical outlier
+# relative to the rest of the plate (~2.5σ ≈ the tails of a normal population).
+ANOMALY_Z_THRESHOLD: float = 2.5
+
+# Hard circularity floor for the "non_circular" flag. Below this a contour is
+# likely a streak, edge artifact, or debris rather than a round colony.
+# Tuned empirically on BAP and MAC plates — revisit per-medium after validation.
+NON_CIRCULAR_THRESHOLD: float = 0.4
+
+# Aspect-ratio ceiling for the "streak_or_artifact" flag. Above this the contour
+# is elongated — a streak or swarming smear (e.g. Proteus) rather than a discrete
+# colony. Profile swarming overrides are applied downstream via the biology block.
+STREAK_ASPECT_RATIO_THRESHOLD: float = 3.0
+
+# Haemolysis halo brightness delta threshold (pixel-intensity units). Beta-
+# haemolysis on blood agar clears the medium, producing a halo significantly
+# brighter than surrounding agar under backlight — flags candidates for review.
+HEMOLYSIS_DELTA_THRESHOLD: float = 15.0
+
+# Outer radius of the haemolysis measurement annulus, as a multiple of the
+# colony's equivalent radius (how far out the clear zone is sampled).
+HEMOLYSIS_ZONE_SCALE: float = 2.5
+
+# Background ring for haemolysis begins just beyond the annulus, at this multiple
+# of the outer radius, to sample unaffected agar for the brightness baseline.
+HEMOLYSIS_BG_RING_FACTOR: float = 1.1
+
+# Watershed sure-foreground threshold as a fraction of the peak distance-transform
+# value — isolates colony cores before splitting touching colonies.
+WATERSHED_FG_THRESHOLD_FRAC: float = 0.4
+
 
 # ── Plate detection ───────────────────────────────────────────────────────────
 
@@ -93,7 +132,7 @@ def _texture_contrast(gray: np.ndarray, mask: np.ndarray) -> float:
 
 
 def _hemolysis_zone(gray: np.ndarray, cx: int, cy: int,
-                    colony_r: float, scale: float = 2.5) -> float:
+                    colony_r: float, scale: float = HEMOLYSIS_ZONE_SCALE) -> float:
     """
     Estimate hemolysis zone by measuring mean brightness in an annular ring
     around the colony. Under backlight, beta-haemolysis creates a brighter
@@ -117,7 +156,7 @@ def _hemolysis_zone(gray: np.ndarray, cx: int, cy: int,
     dist = np.sqrt((rx - (cx - x0)) ** 2 + (ry - (cy - y0)) ** 2)
 
     annulus = (dist >= inner) & (dist <= outer)
-    bg      = dist > outer * 1.1
+    bg      = dist > outer * HEMOLYSIS_BG_RING_FACTOR
 
     halo_mean = float(np.mean(roi[annulus])) if annulus.any() else 0.0
     bg_mean   = float(np.mean(roi[bg]))      if bg.any()      else halo_mean
@@ -128,13 +167,13 @@ def _hemolysis_zone(gray: np.ndarray, cx: int, cy: int,
 # ── Statistical anomaly scoring ───────────────────────────────────────────────
 
 def _flag_anomalies(contour_info: List[Dict],
-                    z_thresh: float = 2.5) -> List[Dict]:
+                    z_thresh: float = ANOMALY_Z_THRESHOLD) -> List[Dict]:
     """
     Flag per-colony anomalies using Z-score on key features.
     Preserves any flags already set (e.g. touching_colony from watershed).
     Adds/updates 'anomaly_flags' and 'anomaly_score' on each colony dict.
     """
-    if len(contour_info) < 3:
+    if len(contour_info) < MIN_COLONIES_FOR_STATS:
         for c in contour_info:
             c.setdefault("anomaly_flags", [])
             c["anomaly_score"] = 0.0
@@ -163,11 +202,11 @@ def _flag_anomalies(contour_info: List[Dict],
         if aspect_z[i]  > z_thresh: flags.append("elongated")
         if texture_z[i] > z_thresh: flags.append("texture_anomaly")
         if colour_z[i]  > z_thresh: flags.append("abnormal_colour")
-        if colony["circularity"] < 0.4:
+        if colony["circularity"] < NON_CIRCULAR_THRESHOLD:
             flags.append("non_circular")
-        if colony["aspect_ratio"] > 3.0:
+        if colony["aspect_ratio"] > STREAK_ASPECT_RATIO_THRESHOLD:
             flags.append("streak_or_artifact")
-        if colony["hemolysis_delta"] > 15:
+        if colony["hemolysis_delta"] > HEMOLYSIS_DELTA_THRESHOLD:
             flags.append("hemolysis_candidate")
 
         # Deduplicate, preserving order
@@ -195,7 +234,7 @@ def quantify_colonies(
     rim_shrink_mm: float = 3.0,
     plate_inner_radius_mm: float = PLATE_INNER_RADIUS_MM,
     # anomaly
-    anomaly_z_thresh: float = 2.5,
+    anomaly_z_thresh: float = ANOMALY_Z_THRESHOLD,
 ) -> Dict:
     """
     Quantify bacterial colonies in a backlit agar plate image.
@@ -259,7 +298,8 @@ def quantify_colonies(
     _, pre_watershed_labels = cv2.connectedComponents(cleaned)
 
     dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(dist_transform, 0.4 * dist_transform.max(), 255, 0)
+    _, sure_fg = cv2.threshold(
+        dist_transform, WATERSHED_FG_THRESHOLD_FRAC * dist_transform.max(), 255, 0)
     sure_fg    = np.uint8(sure_fg)
     sure_bg    = cv2.dilate(cleaned, k, iterations=3)
     unknown    = cv2.subtract(sure_bg, sure_fg)
@@ -366,7 +406,7 @@ def quantify_colonies(
             "max_area_mm2":    float(max(areas)),
             "mean_circularity": float(np.mean(circs)),
             "coverage_pct":    float(sum(areas) / plate_area_mm2 * 100),
-            "hemolysis_candidates": sum(1 for h in hemols if h > 15),
+            "hemolysis_candidates": sum(1 for h in hemols if h > HEMOLYSIS_DELTA_THRESHOLD),
         }
     else:
         summary = {k: 0 for k in [
