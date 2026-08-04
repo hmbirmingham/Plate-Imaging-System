@@ -230,6 +230,122 @@ def _flag_anomalies(contour_info: List[Dict],
     return contour_info
 
 
+# ── Pipeline stages ───────────────────────────────────────────────────────────
+
+def _subtract_background(gray: np.ndarray, plate_mask: np.ndarray,
+                         blur_kernel: int, diff_threshold: int) -> np.ndarray:
+    """
+    Flatten the backlight gradient and threshold to a cleaned binary mask.
+
+    A heavy Gaussian blur models the slow backlight/hotspot gradient;
+    (background - image) makes dark colonies bright while the gradient cancels.
+    The result is masked to the plate, thresholded, and morphologically cleaned.
+
+    Parameters
+    ----------
+    gray           : grayscale plate image
+    plate_mask     : uint8 mask of the usable inner plate area
+    blur_kernel    : odd Gaussian kernel size for the illumination model
+    diff_threshold : binary threshold on the background-subtracted difference
+
+    Returns
+    -------
+    Cleaned binary (uint8) mask ready for watershed segmentation.
+    """
+    bg_model    = cv2.GaussianBlur(gray, (blur_kernel, blur_kernel), 0)
+    diff        = cv2.subtract(bg_model, gray)
+    diff_masked = cv2.bitwise_and(diff, plate_mask)
+
+    _, binary = cv2.threshold(diff_masked, diff_threshold, 255, cv2.THRESH_BINARY)
+
+    k       = np.ones((3, 3), np.uint8)
+    opened  = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  k, iterations=1)
+    cleaned = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, k, iterations=2)
+    return cleaned
+
+
+def _apply_watershed(image: np.ndarray,
+                     cleaned: np.ndarray) -> Tuple[List[np.ndarray], np.ndarray]:
+    """
+    Split touching colonies with a distance-transform watershed.
+
+    Parameters
+    ----------
+    image   : original BGR image (watershed operates on the colour image)
+    cleaned : cleaned binary mask from _subtract_background
+
+    Returns
+    -------
+    (contours, pre_watershed_labels)
+      contours              : external contours of the segmented colonies
+      pre_watershed_labels  : connected-component labelling of `cleaned` taken
+                              BEFORE watershed, used downstream to detect
+                              colonies that were originally touching.
+    """
+    # Label connected components BEFORE watershed (touching-colony detection).
+    _, pre_watershed_labels = cv2.connectedComponents(cleaned)
+
+    k = np.ones((3, 3), np.uint8)
+    dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
+    _, sure_fg = cv2.threshold(
+        dist_transform, WATERSHED_FG_THRESHOLD_FRAC * dist_transform.max(), 255, 0)
+    sure_fg = np.uint8(sure_fg)
+    sure_bg = cv2.dilate(cleaned, k, iterations=3)
+    unknown = cv2.subtract(sure_bg, sure_fg)
+
+    _, markers = cv2.connectedComponents(sure_fg)
+    markers    = markers + 1
+    markers[unknown == 255] = 0
+
+    ws_image = image.copy()
+    markers  = cv2.watershed(ws_image, markers)
+    watershed_mask = np.zeros_like(cleaned)
+    watershed_mask[markers > 1] = 255
+
+    contours, _ = cv2.findContours(
+        watershed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours, pre_watershed_labels
+
+
+def _annotate_image(original: np.ndarray,
+                    valid_contours: List[np.ndarray],
+                    contour_info: List[Dict],
+                    plate_circle: Tuple[int, int, int, int],
+                    count: int, anomaly_count: int) -> np.ndarray:
+    """
+    Draw the plate rings, per-colony contours, numbers, and count label.
+
+    Parameters
+    ----------
+    original       : BGR image to draw on (a copy is made)
+    valid_contours : accepted colony contours (drawn in order)
+    contour_info   : matching per-colony dicts (anomaly_flags → red, else green)
+    plate_circle   : (cx, cy, radius, inner_radius)
+    count          : total colony count for the overlay label
+    anomaly_count  : flagged colony count for the overlay label
+
+    Returns
+    -------
+    Annotated BGR image.
+    """
+    cx, cy, radius, inner_radius = plate_circle
+    annotated = original.copy()
+    cv2.circle(annotated, (cx, cy), radius,       (255, 165,   0), 3)  # orange rim
+    cv2.circle(annotated, (cx, cy), inner_radius, (  0, 200, 255), 2)  # cyan boundary
+
+    for i, (contour, info) in enumerate(zip(valid_contours, contour_info), 1):
+        colour = (0, 0, 255) if info["anomaly_flags"] else (0, 255, 0)
+        cv2.drawContours(annotated, [contour], -1, colour, 2)
+        pcx, pcy = info["centroid"]
+        cv2.putText(annotated, str(i), (pcx + 4, pcy - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
+
+    label = f"Count: {count}  |  Anomalies: {anomaly_count}"
+    cv2.putText(annotated, label, (10, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2, cv2.LINE_AA)
+    return annotated
+
+
 # ── Main quantification ───────────────────────────────────────────────────────
 
 def quantify_colonies(
@@ -304,46 +420,13 @@ def quantify_colonies(
     plate_mask = np.zeros(gray.shape, np.uint8)
     cv2.circle(plate_mask, (cx, cy), inner_radius, 255, -1)
 
-    # ── 2. Background subtraction ────────────────────────────────────────────
-    # Heavy Gaussian blur models the slow backlight/hotspot gradient.
-    # background - original → dark colonies become bright, gradient cancels out.
-    bg_model    = cv2.GaussianBlur(gray, (bg_blur_kernel, bg_blur_kernel), 0)
-    diff        = cv2.subtract(bg_model, gray)
-    diff_masked = cv2.bitwise_and(diff, plate_mask)
-
-    # ── 3. Threshold ─────────────────────────────────────────────────────────
-    _, binary = cv2.threshold(diff_masked, diff_threshold, 255, cv2.THRESH_BINARY)
-
-    # ── 4. Morphological cleanup ─────────────────────────────────────────────
-    k       = np.ones((3, 3), np.uint8)
-    opened  = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  k, iterations=1)
-    cleaned = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, k, iterations=2)
+    # ── 2-4. Background subtraction, threshold, morphological cleanup ─────────
+    cleaned = _subtract_background(gray, plate_mask, bg_blur_kernel, diff_threshold)
 
     # ── 5. Watershed segmentation (split touching colonies) ──────────────────
-    # Label connected components BEFORE watershed — used later to identify
-    # colonies that were touching in the raw binary image.
-    _, pre_watershed_labels = cv2.connectedComponents(cleaned)
+    contours, pre_watershed_labels = _apply_watershed(image, cleaned)
 
-    dist_transform = cv2.distanceTransform(cleaned, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(
-        dist_transform, WATERSHED_FG_THRESHOLD_FRAC * dist_transform.max(), 255, 0)
-    sure_fg    = np.uint8(sure_fg)
-    sure_bg    = cv2.dilate(cleaned, k, iterations=3)
-    unknown    = cv2.subtract(sure_bg, sure_fg)
-
-    _, markers = cv2.connectedComponents(sure_fg)
-    markers    = markers + 1
-    markers[unknown == 255] = 0
-
-    ws_image = image.copy()
-    markers  = cv2.watershed(ws_image, markers)
-    watershed_mask = np.zeros_like(cleaned)
-    watershed_mask[markers > 1] = 255
-
-    # ── 6. Find & filter contours ────────────────────────────────────────────
-    contours, _ = cv2.findContours(
-        watershed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+    # ── 6. Filter contours & extract features ────────────────────────────────
     valid_contours: List[np.ndarray] = []
     contour_info:   List[Dict]       = []
 
@@ -442,20 +525,9 @@ def quantify_colonies(
             "coverage_pct", "hemolysis_candidates"]}
 
     # ── 10. Annotate output image ─────────────────────────────────────────────
-    annotated = original.copy()
-    cv2.circle(annotated, (cx, cy), radius,       (255, 165,   0), 3)  # orange rim
-    cv2.circle(annotated, (cx, cy), inner_radius, (  0, 200, 255), 2)  # cyan boundary
-
-    for i, (contour, info) in enumerate(zip(valid_contours, contour_info), 1):
-        colour = (0, 0, 255) if info["anomaly_flags"] else (0, 255, 0)
-        cv2.drawContours(annotated, [contour], -1, colour, 2)
-        pcx, pcy = info["centroid"]
-        cv2.putText(annotated, str(i), (pcx + 4, pcy - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1, cv2.LINE_AA)
-
-    label = f"Count: {count}  |  Anomalies: {anomaly_count}"
-    cv2.putText(annotated, label, (10, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2, cv2.LINE_AA)
+    annotated = _annotate_image(original, valid_contours, contour_info,
+                                (cx, cy, radius, inner_radius),
+                                count, anomaly_count)
 
     if output_path:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
