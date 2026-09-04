@@ -1,0 +1,59 @@
+# test_matrix.yaml — Track 1/2/3 scenario matrix for the continuous testing
+# harness. run_cycle.py round-robins through `track1_scenarios` every cycle;
+# `track2` and `track3_load_test` entries fire on their own cadence.
+#
+# Every Track 1 scenario is a (illumination x density x artifacts x
+# camera_distance_factor) combination. camera_distance_factor scales the
+# rendered plate radius in pixels only — real colony sizes stay fixed in mm —
+# so sweeping it directly exercises the "distance-invariant" measurement
+# claim in quantify.py (px_per_mm is derived from the detected plate circle,
+# not a fixed constant).
+
+track1_scenarios:
+  # Illumination sweep (moderate density, no artifacts, reference distance).
+  - {illumination: uniform,       density: moderate, artifacts: [],                    camera_distance_factor: 1.0}
+  - {illumination: gradient,      density: moderate, artifacts: [],                    camera_distance_factor: 1.0}
+  - {illumination: hotspot,       density: moderate, artifacts: [],                    camera_distance_factor: 1.0}
+  - {illumination: low_contrast,  density: moderate, artifacts: [],                    camera_distance_factor: 1.0}
+
+  # Density sweep (uniform illumination, reference distance).
+  - {illumination: uniform,       density: sparse,   artifacts: [],                    camera_distance_factor: 1.0}
+  - {illumination: uniform,       density: dense,    artifacts: [],                    camera_distance_factor: 1.0}
+
+  # Artifact injection (uniform illumination, moderate density).
+  - {illumination: uniform,       density: moderate, artifacts: [streak],              camera_distance_factor: 1.0}
+  - {illumination: uniform,       density: moderate, artifacts: [debris],              camera_distance_factor: 1.0}
+  - {illumination: uniform,       density: moderate, artifacts: [oversized_blob],      camera_distance_factor: 1.0}
+  - {illumination: uniform,       density: moderate, artifacts: [streak, debris, oversized_blob], camera_distance_factor: 1.0}
+
+  # Simulated camera distance sweep (uniform illumination, sparse density —
+  # isolates the distance-invariance claim from density/watershed effects).
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 0.6}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 0.8}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.0}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.2}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.4}
+
+  # Combined stress scenario.
+  - {illumination: hotspot,       density: dense,    artifacts: [streak, debris],      camera_distance_factor: 0.7}
+
+# Track 2 (anomaly-model validation) runs every Nth cycle, not every cycle —
+# training/evaluating three classifiers on every cycle would be wasted work
+# once the synthetic feature generator has stabilized.
+track2:
+  run_every_n_cycles: 5
+  n_samples: 400
+  anomaly_fraction: 0.15
+  label_noise: 0.05
+
+# Track 3's CSV/profile round-trip check runs every cycle (cheap); the
+# increasing-batch-size load test only runs on a schedule since it's the
+# most expensive Track 3 check.
+track3_load_test:
+  run_every_n_cycles: 10
+  batch_sizes: [10, 50, 100, 250]
+
+# How many most-recent cycles' intermediate images to retain on disk.
+# Kept small deliberately — the target device is a Raspberry Pi with a
+# limited SD card, and every artifact here is regenerable from its seed.
+artifact_retention_cycles: 5
