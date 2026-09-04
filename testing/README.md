@@ -72,3 +72,43 @@ adapter), for Track 2 anomaly-model validation.
   the clean one, so Track 2's precision/recall/F1 numbers reflect
   robustness to imperfect manual labelling, not just curve-fitting on
   perfect synthetic labels.
+
+## `continuous/track2_ml_validation.py` — model comparison methodology
+
+Every `run_every_n_cycles`-th cycle (`test_matrix.yaml`'s `track2` block),
+`evaluate()` generates one fresh `generate_colony_features()` batch and
+runs a 70/30 train/test split (stratified on the clean `true_is_anomaly`
+label, so both splits keep the same anomaly ratio regardless of how rare
+anomalies are configured to be).
+
+Three models are trained on the same split and compared:
+
+- **Random Forest** — evaluated through the actual production
+  `anomaly.MLDetector` class (writes the training split to a throwaway CSV
+  and calls `MLDetector.train()`/`.predict()` exactly as `server.py` would),
+  not a re-implementation. This is deliberate: Track 2 benchmarks the model
+  that ships, not a lookalike that could silently drift from it if
+  `anomaly.py`'s hyperparameters ever change.
+- **Gradient boosting** — `sklearn.ensemble.GradientBoostingClassifier` in
+  a `StandardScaler` pipeline, trained the same way.
+- **Neural net** — `sklearn.neural_network.MLPClassifier` (a small
+  `(32, 16)` hidden-layer network) in the same pipeline shape. Chosen over
+  a deep-learning framework specifically to avoid adding a TensorFlow/
+  PyTorch dependency for one comparison model — `scikit-learn` is already
+  in `requirements.txt`.
+
+All three train on the **noisy** `is_anomaly` column and are scored against
+the **clean, held-out** `true_is_anomaly` column — see
+`generate_colony_features()` above. This means the reported precision/
+recall/F1 answers "how well does this model generalize despite imperfect
+training labels", which is the actual condition `data_logger.py`'s
+real-world CSV will be trained from, not "how well does this model
+memorize noise-free synthetic data" (a strictly easier and less meaningful
+question).
+
+Results are **not** averaged into a single "the model is X% accurate"
+number and left there — `aggregate_report.md`'s Track 2 section keeps a
+rolling history (capped, per the plan's memory-discipline constraints) of
+every evaluation, specifically so the thesis can show how model comparison
+results evolved as the synthetic feature generator itself was refined over
+time, per the original testing scope's requirement.
