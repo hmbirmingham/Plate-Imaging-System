@@ -2,17 +2,27 @@
 """
 scheduler.py — runs test cycles continuously or on a defined cadence.
 
-Continuous mode round-robins the test matrix indefinitely, sleeping between
-cycles. Meant to run in the background on the Pi/dev machine during active
-development — start it with
-`python -m testing.continuous.scheduler --mode continuous`.
+Two operating modes:
 
-Memory discipline (see the approved plan's "Hardware constraints" section):
-this may run unattended for a long time on a Raspberry Pi that also runs
-the real capture app, so it checks its own process RSS every cycle via
-resource.getrusage and backs off (a longer sleep) once it crosses
-`--rss-limit-mb`, rather than free-running as fast as it can regardless of
-memory pressure.
+    --mode continuous   Round-robins the test matrix indefinitely, sleeping
+                         between cycles. Meant to run in the background on
+                         the Pi/dev machine during active development —
+                         start it with `python -m testing.continuous.scheduler
+                         --mode continuous`. Self-throttles under memory
+                         pressure (see below) since it may share the Pi with
+                         the real capture app.
+
+    --mode ci            Runs exactly one full pass over
+                         test_matrix.yaml's track1_scenarios (one run_cycle()
+                         call per scenario) and exits — this is what the
+                         GitHub Action calls on every push.
+
+Memory discipline in continuous mode (see the approved plan's "Hardware
+constraints" section): this may run unattended for a long time on a
+Raspberry Pi that also runs the real capture app, so it checks its own
+process RSS every cycle via resource.getrusage and backs off (a longer
+sleep) once it crosses `--rss-limit-mb`, rather than free-running as fast as
+it can regardless of memory pressure.
 """
 
 from __future__ import annotations
@@ -21,6 +31,8 @@ import argparse
 import resource
 import sys
 import time
+
+import yaml
 
 from testing.continuous import run_cycle
 
@@ -55,17 +67,37 @@ def run_continuous(interval_s: float, rss_limit_mb: float) -> None:
         time.sleep(sleep_s)
 
 
+def run_ci() -> int:
+    """One full matrix pass, deterministic, exits with a real status code —
+    this is the unit `.github/workflows/continuous-testing.yml` calls."""
+    matrix = yaml.safe_load(run_cycle.MATRIX_PATH.read_text())
+    n_scenarios = len(matrix["track1_scenarios"])
+    print(f"scheduler: CI mode — running {n_scenarios} cycles (one full matrix pass)", flush=True)
+
+    all_passed = True
+    for i in range(n_scenarios):
+        summary = run_cycle.run_one_cycle()
+        status = "PASS" if summary["passed"] else "FAIL"
+        print(f"scheduler: cycle {summary['cycle_id']} {status} "
+              f"({summary['scenario_config']})", flush=True)
+        all_passed = all_passed and summary["passed"]
+
+    return 0 if all_passed else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["continuous"], required=True)
+    parser.add_argument("--mode", choices=["continuous", "ci"], required=True)
     parser.add_argument("--interval", type=float, default=DEFAULT_CYCLE_INTERVAL_S,
                         help="Seconds between cycles in continuous mode.")
     parser.add_argument("--rss-limit-mb", type=float, default=DEFAULT_RSS_LIMIT_MB,
-                        help="Back off cycle cadence above this process RSS.")
+                        help="Back off cycle cadence above this process RSS (continuous mode only).")
     args = parser.parse_args()
 
-    run_continuous(args.interval, args.rss_limit_mb)
-    return 0  # unreachable — continuous mode runs until killed
+    if args.mode == "continuous":
+        run_continuous(args.interval, args.rss_limit_mb)
+        return 0  # unreachable — continuous mode runs until killed
+    return run_ci()
 
 
 if __name__ == "__main__":
