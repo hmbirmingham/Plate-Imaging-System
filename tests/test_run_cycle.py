@@ -18,13 +18,16 @@ from testing.continuous import run_cycle
 
 @pytest.fixture
 def isolated_output_dirs(tmp_path, monkeypatch):
+    # Deliberately do NOT create logs_dir/reports_dir/artifacts_dir here —
+    # they're gitignored, regenerable output, and a fresh checkout (e.g.
+    # GitHub Actions) has none of them on disk. run_cycle.run_one_cycle()
+    # must create its own output directories; a fixture that pre-creates
+    # them would mask exactly that bug (which is what happened originally —
+    # this passed locally where the dirs already existed by hand, then
+    # crashed on a real clean checkout in CI).
     logs_dir = tmp_path / "logs"
     reports_dir = tmp_path / "reports"
     artifacts_dir = tmp_path / "artifacts" / "images"
-    for sub in ("pre", "during", "post"):
-        (logs_dir / sub).mkdir(parents=True, exist_ok=True)
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(run_cycle, "LOGS_DIR", logs_dir)
     monkeypatch.setattr(run_cycle, "REPORTS_DIR", reports_dir)

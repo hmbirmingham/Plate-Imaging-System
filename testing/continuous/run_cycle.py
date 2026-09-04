@@ -58,7 +58,20 @@ def _prune_dir(dir_path: Path, keep_recent: int, glob: str = "*") -> None:
             stale.unlink(missing_ok=True)
 
 
+def _ensure_output_dirs() -> None:
+    """testing/logs/{pre,during,post}/ etc. are gitignored (raw, regenerable
+    output) — a fresh checkout (e.g. GitHub Actions) has none of them on
+    disk. They only ever existed locally because they'd been created once
+    by hand; nothing in the code actually created them. Idempotent, cheap,
+    called at the start of every cycle."""
+    for sub in ("pre", "during", "post"):
+        (LOGS_DIR / sub).mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def run_one_cycle() -> Dict:
+    _ensure_output_dirs()
     matrix = _load_matrix()
     scenarios = matrix["track1_scenarios"]
     retention = matrix.get("artifact_retention_cycles", 5)
