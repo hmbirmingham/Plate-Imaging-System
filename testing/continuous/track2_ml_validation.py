@@ -20,10 +20,13 @@ from pathlib import Path
 from typing import Dict
 
 import pandas as pd
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
-from anomaly import MLDetector
+from anomaly import ML_FEATURES, MLDetector
 from testing.continuous.synthetic_data import FeatureScenario, generate_colony_features
 
 TEST_FRACTION = 0.3
@@ -52,6 +55,13 @@ def _evaluate_random_forest(df_train: pd.DataFrame, df_test: pd.DataFrame) -> Di
     return _metrics(df_test["true_is_anomaly"], y_pred)
 
 
+def _evaluate_sklearn_pipeline(pipeline: Pipeline, df_train: pd.DataFrame,
+                                df_test: pd.DataFrame) -> Dict[str, float]:
+    pipeline.fit(df_train[ML_FEATURES], df_train["is_anomaly"])
+    y_pred = pipeline.predict(df_test[ML_FEATURES])
+    return _metrics(df_test["true_is_anomaly"], y_pred)
+
+
 def evaluate(track2_cfg: Dict, seed: int) -> Dict:
     """
     Runs one Track 2 evaluation cycle: generates a fresh synthetic feature
@@ -72,8 +82,14 @@ def evaluate(track2_cfg: Dict, seed: int) -> Dict:
     df_train, df_test = train_test_split(
         df, test_size=TEST_FRACTION, random_state=seed, stratify=df["true_is_anomaly"])
 
+    gb_pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", GradientBoostingClassifier(n_estimators=200, max_depth=3, random_state=42)),
+    ])
+
     return {
         "random_forest": _evaluate_random_forest(df_train, df_test),
+        "gradient_boosting": _evaluate_sklearn_pipeline(gb_pipeline, df_train, df_test),
         "n_train": len(df_train),
         "n_test": len(df_test),
         "seed": seed,
