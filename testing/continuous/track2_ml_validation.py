@@ -11,11 +11,16 @@ imperfect human validation, per synthetic_data.FeatureScenario) and are
 evaluated against the clean, held-out `true_is_anomaly` column, so the
 reported precision/recall/F1 measures robustness to label noise, not just
 curve-fitting on perfect synthetic labels.
+
+"Simple NN" = sklearn.neural_network.MLPClassifier — scikit-learn is
+already a dependency; this avoids pulling in TensorFlow/PyTorch for one
+comparison model.
 """
 
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Dict
 
@@ -23,6 +28,7 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -57,20 +63,26 @@ def _evaluate_random_forest(df_train: pd.DataFrame, df_test: pd.DataFrame) -> Di
 
 def _evaluate_sklearn_pipeline(pipeline: Pipeline, df_train: pd.DataFrame,
                                 df_test: pd.DataFrame) -> Dict[str, float]:
-    pipeline.fit(df_train[ML_FEATURES], df_train["is_anomaly"])
-    y_pred = pipeline.predict(df_test[ML_FEATURES])
+    # MLPClassifier's adam optimizer emits benign matmul overflow/divide-by-
+    # zero RuntimeWarnings on some small-dataset iterations before
+    # converging — harmless (final metrics are still finite and sane), but
+    # noisy enough in a continuously-running harness to be worth quieting.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        pipeline.fit(df_train[ML_FEATURES], df_train["is_anomaly"])
+        y_pred = pipeline.predict(df_test[ML_FEATURES])
     return _metrics(df_test["true_is_anomaly"], y_pred)
 
 
 def evaluate(track2_cfg: Dict, seed: int) -> Dict:
     """
     Runs one Track 2 evaluation cycle: generates a fresh synthetic feature
-    set, trains models on a noisy-label train split, and scores them
-    against the clean held-out test split.
+    set, trains all three models on a noisy-label train split, and scores
+    them against the clean held-out test split.
 
-    Returns {"random_forest": {precision, recall, f1}, "n_train": int,
-    "n_test": int, "seed": int} — the schema run_cycle.py's aggregate
-    report renders directly.
+    Returns {"random_forest": {precision, recall, f1}, "gradient_boosting":
+    {...}, "neural_net": {...}, "n_train": int, "n_test": int, "seed": int}
+    — the schema run_cycle.py's aggregate report renders directly.
     """
     scenario = FeatureScenario(
         n_samples=track2_cfg.get("n_samples", 400),
@@ -86,10 +98,15 @@ def evaluate(track2_cfg: Dict, seed: int) -> Dict:
         ("scaler", StandardScaler()),
         ("clf", GradientBoostingClassifier(n_estimators=200, max_depth=3, random_state=42)),
     ])
+    nn_pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=1000, random_state=42)),
+    ])
 
     return {
         "random_forest": _evaluate_random_forest(df_train, df_test),
         "gradient_boosting": _evaluate_sklearn_pipeline(gb_pipeline, df_train, df_test),
+        "neural_net": _evaluate_sklearn_pipeline(nn_pipeline, df_train, df_test),
         "n_train": len(df_train),
         "n_test": len(df_test),
         "seed": seed,
