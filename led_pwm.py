@@ -1,9 +1,15 @@
 """
-led_pwm.py — Python wrapper around the led_pwm.so C shared library.
+led_pwm.py — Python wrapper around the led_pwm_native.so C shared library.
 
 The real driver logic lives in led_pwm.c (hardware PWM via /dev/mem mmap).
-This module auto-compiles the C source on first import if led_pwm.so is
-missing or outdated, then loads it with ctypes.
+This module auto-compiles the C source on first import if led_pwm_native.so
+is missing or outdated, then loads it with ctypes. The compiled artifact is
+deliberately NOT named led_pwm.so: a same-named .so sitting next to
+led_pwm.py in the same importable directory shadows the .py module for
+every subsequent `import led_pwm` (Python's import machinery checks
+extension-module suffixes before source suffixes) — once compiled once,
+every later process would fail with an ImportError before this module's
+own code ever runs again.
 
 Public API is identical to the previous pure-Python implementation so
 server.py requires no changes:
@@ -29,14 +35,14 @@ log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _C_SRC = _HERE / "led_pwm.c"
-_SO    = _HERE / "led_pwm.so"
+_SO    = _HERE / "led_pwm_native.so"
 
 
 # ── Compile ───────────────────────────────────────────────────────────────────
 
 def _compile() -> bool:
     """
-    Compile led_pwm.c → led_pwm.so if the .so is missing or the .c is newer.
+    Compile led_pwm.c → led_pwm_native.so if missing or the .c is newer.
     Returns True on success, False on failure.
     """
     need_build = (
@@ -64,7 +70,7 @@ def _compile() -> bool:
 
 def _load() -> Optional[ctypes.CDLL]:
     """
-    Load led_pwm.so and declare the C function signatures so ctypes can
+    Load led_pwm_native.so and declare the C function signatures so ctypes can
     marshal arguments and return values correctly.
     Returns the loaded library or None on failure.
     """
@@ -74,7 +80,7 @@ def _load() -> Optional[ctypes.CDLL]:
     try:
         lib = ctypes.CDLL(str(_SO))
     except OSError as e:
-        log.warning("LED PWM: cannot load led_pwm.so — %s", e)
+        log.warning("LED PWM: cannot load led_pwm_native.so — %s", e)
         return None
 
     # Declare types so ctypes marshals correctly

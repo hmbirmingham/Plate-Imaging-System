@@ -5,11 +5,11 @@
 CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -shared -fPIC
 
-led_pwm.so: led_pwm.c
+led_pwm_native.so: led_pwm.c
 	$(CC) $(CFLAGS) -o $@ $<
 	@echo "Built $@"
 
 clean:
-	rm -f led_pwm.so
+	rm -f led_pwm_native.so
 
 .PHONY: clean
