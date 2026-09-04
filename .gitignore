@@ -32,3 +32,17 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Continuous testing harness — generated test artifacts, never commit raw
+# outputs. Regenerable from testing/continuous/*.py + the seed logged in
+# each cycle's Phase A record — commit the generator, not the output.
+testing/logs/
+testing/artifacts/
+testing/reports/cycle_*
+testing/reports/aggregate_state.json
+testing/thesis_export/generated/
+
+# aggregate_report.md itself IS committed periodically (once per branch
+# merge) as the thesis-relevant snapshot — only the raw per-cycle data
+# behind it (above) is excluded.
+!testing/reports/aggregate_report.md

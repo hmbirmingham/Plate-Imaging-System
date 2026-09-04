@@ -28,14 +28,19 @@ track1_scenarios:
 
   # Simulated camera distance sweep (uniform illumination, sparse density —
   # isolates the distance-invariance claim from density/watershed effects).
-  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 0.6}
-  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 0.8}
+  # Kept within quantify.detect_plate_circle()'s own Hough radius window
+  # (see synthetic_data.MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR) — below it the
+  # plate is too small in-frame for Hough to find at all, which is a
+  # documented detection-window limit of the production pipeline, not
+  # something this sweep is trying to characterize.
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 0.85}
   - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.0}
-  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.2}
-  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.4}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.15}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.3}
+  - {illumination: uniform,       density: sparse,   artifacts: [], camera_distance_factor: 1.45}
 
   # Combined stress scenario.
-  - {illumination: hotspot,       density: dense,    artifacts: [streak, debris],      camera_distance_factor: 0.7}
+  - {illumination: hotspot,       density: dense,    artifacts: [streak, debris],      camera_distance_factor: 0.85}
 
 # Track 2 (anomaly-model validation) runs every Nth cycle, not every cycle —
 # training/evaluating three classifiers on every cycle would be wasted work

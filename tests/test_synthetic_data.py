@@ -5,10 +5,12 @@ exercised continuously by run_cycle.py) — they verify the generator itself:
 determinism, schema, and that the physical quantities it claims (colony
 count, area_mm2, distance-invariant px_per_mm) are internally consistent.
 """
+import cv2
 import numpy as np
 
 from testing.continuous.synthetic_data import (
     FeatureScenario,
+    MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR,
     PlateScenario,
     expected_px_per_mm,
     generate_colony_features,
@@ -47,7 +49,6 @@ def test_ground_truth_area_recoverable_by_quantify_pipeline(tmp_path):
     scenario = PlateScenario(seed=3, density="sparse", illumination="uniform")
     img, gt = generate_plate_image(scenario)
     src = tmp_path / "plate.jpg"
-    import cv2
     cv2.imwrite(str(src), img)
 
     result = q.quantify_colonies(str(src), str(tmp_path / "out.jpg"))
@@ -60,7 +61,8 @@ def test_camera_distance_does_not_change_expected_area():
     """Real colony sizes are fixed in mm; only their pixel footprint should
     change with simulated camera distance — this is the crux of the
     distance-invariance claim tested continuously by Track 1."""
-    near_scenario = PlateScenario(seed=11, density="sparse", camera_distance_factor=0.6)
+    near_scenario = PlateScenario(seed=11, density="sparse",
+                                   camera_distance_factor=MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR)
     far_scenario = PlateScenario(seed=11, density="sparse", camera_distance_factor=1.4)
     _, gt_near = generate_plate_image(near_scenario)
     _, gt_far = generate_plate_image(far_scenario)
@@ -72,11 +74,21 @@ def test_camera_distance_does_not_change_expected_area():
     assert gt_near["plate"]["radius_px"] != gt_far["plate"]["radius_px"]
 
 
+def test_min_supported_camera_distance_factor_is_actually_detectable():
+    """MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR claims quantify.detect_plate_circle()
+    can still find the plate at that distance — guard against the two
+    constants drifting apart if REFERENCE_PLATE_RADIUS_FRACTION ever changes."""
+    scenario = PlateScenario(seed=1, density="sparse",
+                              camera_distance_factor=MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR)
+    img, _ = generate_plate_image(scenario)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    assert q.detect_plate_circle(gray) is not None
+
+
 def test_expected_px_per_mm_matches_quantify_calibration(tmp_path):
     scenario = PlateScenario(seed=5, density="sparse", illumination="uniform")
     img, gt = generate_plate_image(scenario)
     src = tmp_path / "plate.jpg"
-    import cv2
     cv2.imwrite(str(src), img)
 
     result = q.quantify_colonies(str(src), str(tmp_path / "out.jpg"))

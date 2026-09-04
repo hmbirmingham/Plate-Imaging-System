@@ -1,0 +1,35 @@
+name: Continuous testing
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  ci-mode-matrix-pass:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run one full test-matrix pass (CI mode)
+        run: python -m testing.continuous.scheduler --mode ci
+
+      - name: Run unit tests
+        run: pytest -q
+
+      - name: Publish aggregate report to job summary
+        if: always()
+        run: cat testing/reports/aggregate_report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload aggregate report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aggregate-report
+          path: testing/reports/aggregate_report.md

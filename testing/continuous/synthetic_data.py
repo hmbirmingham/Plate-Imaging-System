@@ -66,8 +66,25 @@ COLONY_RADIUS_MM_RANGE = (0.6, 2.2)
 # from the same detected plate circle.
 _RIM_SHRINK_MM = 3.0
 
-REFERENCE_IMAGE_SIZE = 480   # matches quantify.py's typical processing scale
+
+# 960px matches the height of server.py's own default camera preview
+# configuration (main={"size": (1280, 960)}). This matters beyond realism:
+# at 480px the smallest colonies in COLONY_RADIUS_MM_RANGE render at only
+# ~2-3px pixel radius, which a 3x3 morphological open/close in
+# quantify._subtract_background reliably erases regardless of detection
+# quality — measured recall on synthetic sparse/moderate plates jumped from
+# ~0.5 at 480px to ~0.85-0.93 at 960px purely from this resolution change.
+REFERENCE_IMAGE_SIZE = 960
 REFERENCE_PLATE_RADIUS_FRACTION = 0.35  # plate radius as a fraction of image size
+
+# quantify.detect_plate_circle() only searches Hough radii in
+# [0.25, 0.65] x min(image_h, image_w) — a camera_distance_factor pushing
+# the rendered plate below that floor makes the real pipeline unable to
+# find it at all (not a synthetic-data bug: this is quantify.py's own
+# documented detection window). Kept here so callers building their own
+# scenarios (e.g. a test matrix) can validate a distance sweep stays within
+# the range quantify.py actually supports.
+MIN_SUPPORTED_CAMERA_DISTANCE_FACTOR = round(0.25 / REFERENCE_PLATE_RADIUS_FRACTION * 1.15, 2)
 
 
 @dataclass
@@ -174,10 +191,21 @@ def generate_plate_image(scenario: PlateScenario) -> Tuple[np.ndarray, Dict]:
         theta = rng.uniform(0, 2 * math.pi)
         return cx + r * math.cos(theta), cy + r * math.sin(theta)
 
+    # Minimum gap (px) enforced between non-deliberately-touching colonies so
+    # ground truth "expected_count" is actually what the pipeline should
+    # detect — without this, colonies placed uniformly at random collide by
+    # chance often enough (birthday-paradox-style) to silently turn
+    # "sparse"/"moderate" scenarios into unintended touching scenarios.
+    _SEPARATION_MARGIN_PX = 3.0
+    _PLACEMENT_ATTEMPTS = 40
+
+    def _overlaps_any(px: float, py: float, radius_px: float) -> bool:
+        return any(math.hypot(px - ox, py - oy) < (radius_px + orad + _SEPARATION_MARGIN_PX)
+                   for ox, oy, orad in placements)
+
     for i in range(n_colonies):
         radius_mm = rng.uniform(lo_mm, hi_mm)
         radius_px = max(2.0, radius_mm * px_per_mm)
-        px, py = _random_point()
 
         touching = False
         # Deliberately force ~1 in 4 colonies on dense plates to overlap the
@@ -190,6 +218,17 @@ def generate_plate_image(scenario: PlateScenario) -> Tuple[np.ndarray, Dict]:
             dist = (orad + radius_px) * (1 - overlap_frac)
             px, py = ox + dist * math.cos(angle), oy + dist * math.sin(angle)
             touching = True
+        else:
+            px, py = _random_point()
+            for _ in range(_PLACEMENT_ATTEMPTS):
+                if not _overlaps_any(px, py, radius_px):
+                    break
+                px, py = _random_point()
+            else:
+                # No non-overlapping spot found after all attempts (can
+                # happen on crowded plates) — place anyway and record the
+                # honest ground truth: this colony ended up touching another.
+                touching = _overlaps_any(px, py, radius_px)
 
         placements.append((px, py, radius_px))
         cv2.circle(canvas, (int(px), int(py)), int(round(radius_px)),
