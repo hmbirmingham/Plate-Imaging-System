@@ -40,6 +40,7 @@ from quantify import (
     PLATE_INNER_RADIUS_MM,
     STREAK_ASPECT_RATIO_THRESHOLD,
 )
+from anomaly import ML_FEATURES
 
 # ── Track 1: plate image generation ────────────────────────────────────────
 
@@ -247,3 +248,87 @@ def generate_plate_image(scenario: PlateScenario) -> Tuple[np.ndarray, Dict]:
     return image_bgr, ground_truth
 
 
+# ── Track 2: colony feature-vector generation ──────────────────────────────
+
+# Nominal px/mm used only to keep equiv_radius_px internally consistent with
+# area_mm2 in the synthetic feature rows — this is a feature-space stand-in,
+# not a rendered image, so the exact value doesn't need to match Track 1.
+_NOMINAL_PX_PER_MM = 6.0
+
+
+@dataclass
+class FeatureScenario:
+    n_samples: int = 300
+    seed: int = 0
+    anomaly_fraction: float = 0.15
+    # Fraction of TRAINING labels deliberately flipped, simulating imperfect
+    # manual review — mirrors how data_logger.apply_validation() labels are
+    # produced by a human, not an oracle. Held-out evaluation labels stay
+    # clean so Track 2 can measure accuracy against true ground truth.
+    label_noise: float = 0.05
+
+
+def _draw_normal_colony(rng: np.random.Generator) -> Dict:
+    area_mm2 = max(0.1, rng.normal(3.0, 0.6))
+    return {
+        "area_mm2": area_mm2,
+        "circularity": float(np.clip(rng.normal(0.85, 0.07), 0.05, 1.0)),
+        "aspect_ratio": max(1.0, rng.normal(1.15, 0.15)),
+        "equiv_radius_px": math.sqrt(area_mm2 * _NOMINAL_PX_PER_MM ** 2 / math.pi),
+        "r_mean": rng.normal(90, 10), "g_mean": rng.normal(90, 10), "b_mean": rng.normal(90, 10),
+        "r_std": max(0.1, rng.normal(8, 2)), "g_std": max(0.1, rng.normal(8, 2)),
+        "b_std": max(0.1, rng.normal(8, 2)),
+        "texture_contrast": max(0.0, rng.normal(12, 4)),
+        "hemolysis_delta": max(0.0, rng.normal(3, 2)),
+    }
+
+
+def _draw_anomalous_colony(rng: np.random.Generator) -> Dict:
+    """
+    Drawn from shifted distributions calibrated against quantify.py's actual
+    thresholds (ANOMALY_Z_THRESHOLD / NON_CIRCULAR_THRESHOLD /
+    STREAK_ASPECT_RATIO_THRESHOLD / HEMOLYSIS_DELTA_THRESHOLD) so a synthetic
+    "anomaly" is one the production flagging logic would plausibly also flag,
+    not an arbitrary out-of-distribution point.
+    """
+    kind = rng.choice(["size", "shape", "streak", "hemolysis"])
+    row = _draw_normal_colony(rng)
+    if kind == "size":
+        row["area_mm2"] = max(0.05, rng.choice([rng.normal(9.0, 1.5), rng.normal(0.3, 0.1)]))
+        row["equiv_radius_px"] = math.sqrt(row["area_mm2"] * _NOMINAL_PX_PER_MM ** 2 / math.pi)
+    elif kind == "shape":
+        row["circularity"] = float(np.clip(rng.normal(0.3, 0.1), 0.02, NON_CIRCULAR_THRESHOLD))
+    elif kind == "streak":
+        row["aspect_ratio"] = rng.normal(4.5, 0.8) + STREAK_ASPECT_RATIO_THRESHOLD - 3.0
+        row["texture_contrast"] = max(0.0, rng.normal(28, 6))
+    elif kind == "hemolysis":
+        row["hemolysis_delta"] = HEMOLYSIS_DELTA_THRESHOLD + max(0.0, rng.normal(10, 4))
+    return row
+
+
+def generate_colony_features(scenario: FeatureScenario) -> pd.DataFrame:
+    """
+    Build a synthetic per-colony feature table matching anomaly.ML_FEATURES,
+    with a clean ground-truth label (`true_is_anomaly`) and a noisy label
+    (`is_anomaly`) standing in for imperfect human validation.
+    """
+    rng = np.random.default_rng(scenario.seed)
+    n_anom = int(round(scenario.n_samples * scenario.anomaly_fraction))
+    n_norm = scenario.n_samples - n_anom
+
+    rows = [dict(_draw_normal_colony(rng), true_is_anomaly=0) for _ in range(n_norm)]
+    rows += [dict(_draw_anomalous_colony(rng), true_is_anomaly=1) for _ in range(n_anom)]
+    rng.shuffle(rows)  # np.random.Generator.shuffle works in-place on sequences
+
+    df = pd.DataFrame(rows)
+    df["colony_id"] = np.arange(1, len(df) + 1)
+
+    noisy = df["true_is_anomaly"].to_numpy().copy()
+    n_flip = int(round(len(noisy) * scenario.label_noise))
+    if n_flip:
+        flip_idx = rng.choice(len(noisy), size=n_flip, replace=False)
+        noisy[flip_idx] = 1 - noisy[flip_idx]
+    df["is_anomaly"] = noisy
+
+    assert set(ML_FEATURES).issubset(df.columns), "feature schema drifted from anomaly.ML_FEATURES"
+    return df
