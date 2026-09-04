@@ -144,7 +144,7 @@ def run_one_cycle() -> Dict:
         timestamp_utc = datetime.now(timezone.utc).isoformat()
         diff = phase_c.finalize_cycle(state, cycle_id, timestamp_utc, passed, track1_score)
         phase_c.save_aggregate_state(state, STATE_PATH)
-        phase_c.write_aggregate_report(state)
+        phase_c.write_aggregate_report(state, REPORTS_DIR / "aggregate_report.md")
 
         summary = {
             "cycle_id": cycle_id, "timestamp_utc": timestamp_utc,

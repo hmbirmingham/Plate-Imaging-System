@@ -3,13 +3,37 @@ Verifies a single run_cycle.run_one_cycle() call produces all three phase
 artifacts (Phase A/B/C) plus the per-cycle and aggregate reports — the
 minimum bar for the continuous testing harness to be trustworthy before
 letting it run unattended.
+
+Every test redirects run_cycle's output directories to a pytest tmp_path.
+Without this, running the test suite would silently mutate the real,
+git-tracked testing/reports/aggregate_report.md (and pile up real synthetic
+artifacts under testing/) as a side effect of `pytest` itself — exactly the
+kind of hidden state mutation the harness's own git-hygiene rules exist to
+prevent.
 """
-from pathlib import Path
+import pytest
 
 from testing.continuous import run_cycle
 
 
-def test_run_one_cycle_produces_all_phase_artifacts():
+@pytest.fixture
+def isolated_output_dirs(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "logs"
+    reports_dir = tmp_path / "reports"
+    artifacts_dir = tmp_path / "artifacts" / "images"
+    for sub in ("pre", "during", "post"):
+        (logs_dir / sub).mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(run_cycle, "LOGS_DIR", logs_dir)
+    monkeypatch.setattr(run_cycle, "REPORTS_DIR", reports_dir)
+    monkeypatch.setattr(run_cycle, "ARTIFACTS_DIR", artifacts_dir)
+    monkeypatch.setattr(run_cycle, "STATE_PATH", reports_dir / "aggregate_state.json")
+    return tmp_path
+
+
+def test_run_one_cycle_produces_all_phase_artifacts(isolated_output_dirs):
     summary = run_cycle.run_one_cycle()
     cycle_id = summary["cycle_id"]
 
@@ -32,7 +56,7 @@ def test_run_one_cycle_produces_all_phase_artifacts():
     assert "track4" in summary and summary["track4"] is not None
 
 
-def test_run_one_cycle_prunes_artifact_images_directory():
+def test_run_one_cycle_prunes_artifact_images_directory(isolated_output_dirs):
     """Confirms the retention/pruning discipline (see the approved plan's
     Hardware constraints section) actually runs, not just exists in code."""
     import yaml
